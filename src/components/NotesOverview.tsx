@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { motion, MotionConfig } from 'motion/react';
 import {
   StickyNote,
   FileText,
@@ -329,6 +330,7 @@ function compareCreatedDatesDesc(aStr?: string, bStr?: string): number {
 }
 
 interface ActiveViewerItem {
+  cardKey: string;
   type: 'sticky' | 'note';
   id: string;
   title: string;
@@ -344,7 +346,31 @@ interface ActiveViewerItem {
   isBold?: boolean;
   imageUrl?: string;
   images?: string[];
+  accentBarGradient?: string;
 }
+
+interface MorphRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+type ViewerPhase = 'idle' | 'opening' | 'open' | 'closing';
+
+const EXPAND_SPRING = {
+  type: 'spring' as const,
+  stiffness: 240,
+  damping: 28,
+  mass: 0.92,
+};
+
+const COLLAPSE_SPRING = {
+  type: 'spring' as const,
+  stiffness: 265,
+  damping: 30,
+  mass: 0.88,
+};
 
 export const NotesOverview: React.FC<NotesOverviewProps> = ({
   notes,
@@ -449,9 +475,116 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
     }
   }, [isCategorySubmenuOpen, isFileSubmenuOpen, isSortMenuOpen, isStickySortMenuOpen]);
 
-  // Clean Reader Window Modal State (پنجره تمیز، شارپ و خلوت برای مرور و خواندن کامل)
+  // Clean Reader Window Modal & Card Expand/Collapse State
   const [viewingItem, setViewingItem] = useState<ActiveViewerItem | null>(null);
+  const [viewerPhase, setViewerPhase] = useState<ViewerPhase>('idle');
+  const [originRect, setOriginRect] = useState<MorphRect | null>(null);
+  const [targetRect, setTargetRect] = useState<MorphRect | null>(null);
+  const [targetContentHeight, setTargetContentHeight] = useState<number>(360);
   const [readerFontSize, setReaderFontSize] = useState<'normal' | 'large' | 'huge'>('large');
+
+  const cardRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const modalMeasureRef = useRef<HTMLDivElement | null>(null);
+  const modalMeasureContentRef = useRef<HTMLDivElement | null>(null);
+  const viewerPhaseRef = useRef<ViewerPhase>('idle');
+  viewerPhaseRef.current = viewerPhase;
+
+  const setCardRef = useCallback((key: string, el: HTMLElement | null) => {
+    if (el) {
+      cardRefs.current.set(key, el);
+    } else {
+      cardRefs.current.delete(key);
+    }
+  }, []);
+
+  const closeViewerImmediate = useCallback(() => {
+    setViewingItem(null);
+    setViewerPhase('idle');
+    setOriginRect(null);
+    setTargetRect(null);
+  }, []);
+
+  const handleCloseViewer = useCallback(() => {
+    if (!viewingItem) return;
+    if (viewerPhaseRef.current === 'closing') return;
+
+    const cardEl = cardRefs.current.get(viewingItem.cardKey);
+    if (cardEl) {
+      const r = cardEl.getBoundingClientRect();
+      setOriginRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+      setViewerPhase('closing');
+    } else if (originRect) {
+      setViewerPhase('closing');
+    } else {
+      closeViewerImmediate();
+    }
+  }, [viewingItem, originRect, closeViewerImmediate]);
+
+  // Measure exact centered target rect before paint when opening or changing font size
+  useLayoutEffect(() => {
+    if (!viewingItem || viewerPhase === 'closing' || viewerPhase === 'idle') return;
+    const measureEl = modalMeasureRef.current;
+    if (!measureEl) return;
+
+    const r = measureEl.getBoundingClientRect();
+    const contentR = modalMeasureContentRef.current?.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) {
+      setTargetRect((prev) =>
+        prev &&
+        Math.abs(prev.left - r.left) < 0.5 &&
+        Math.abs(prev.top - r.top) < 0.5 &&
+        Math.abs(prev.width - r.width) < 0.5 &&
+        Math.abs(prev.height - r.height) < 0.5
+          ? prev
+          : { left: r.left, top: r.top, width: r.width, height: r.height }
+      );
+      if (contentR && contentR.height > 0) {
+        setTargetContentHeight((prev) =>
+          Math.abs(prev - contentR.height) < 0.5 ? prev : contentR.height
+        );
+      }
+    }
+  }, [viewingItem, readerFontSize, viewerPhase]);
+
+  // Keep centered target rect aligned on viewport resize while open
+  useEffect(() => {
+    if (!viewingItem || viewerPhase === 'closing' || viewerPhase === 'idle') return;
+    const handleResize = () => {
+      const measureEl = modalMeasureRef.current;
+      if (!measureEl) return;
+      const r = measureEl.getBoundingClientRect();
+      const contentR = modalMeasureContentRef.current?.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) {
+        setTargetRect((prev) =>
+          prev &&
+          Math.abs(prev.left - r.left) < 0.5 &&
+          Math.abs(prev.top - r.top) < 0.5 &&
+          Math.abs(prev.width - r.width) < 0.5 &&
+          Math.abs(prev.height - r.height) < 0.5
+            ? prev
+            : { left: r.left, top: r.top, width: r.width, height: r.height }
+        );
+        if (contentR && contentR.height > 0) {
+          setTargetContentHeight((prev) =>
+            Math.abs(prev - contentR.height) < 0.5 ? prev : contentR.height
+          );
+        }
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [viewingItem, viewerPhase]);
+
+  // Safety fallback in case reduced-motion skips onAnimationComplete during closing
+  useEffect(() => {
+    if (viewerPhase !== 'closing') return;
+    const timer = window.setTimeout(() => {
+      if (viewerPhaseRef.current === 'closing') {
+        closeViewerImmediate();
+      }
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [viewerPhase, closeViewerImmediate]);
 
   // Fullscreen Zoom Lightbox State
   const [lightboxState, setLightboxState] = useState<{
@@ -507,51 +640,9 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
   const [taskDueDateInput, setTaskDueDateInput] = useState('');
   const [animatingTaskIds, setAnimatingTaskIds] = useState<Record<string, boolean>>({});
 
-  // Handle Escape key to close any active modal
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (lightboxState) {
-          setLightboxState(null);
-          return;
-        }
-        if (isTaskModalOpen) setIsTaskModalOpen(false);
-        if (viewingItem) setViewingItem(null);
-        if (isFolderModalOpen) setIsFolderModalOpen(false);
-        if (isSortMenuOpen) setIsSortMenuOpen(false);
-        if (isStickySortMenuOpen) setIsStickySortMenuOpen(false);
-        if (editingStickyNote) setEditingStickyNote(null);
-        if (folderToDelete) setFolderToDelete(null);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [lightboxState, isTaskModalOpen, viewingItem, isFolderModalOpen, isSortMenuOpen, isStickySortMenuOpen, editingStickyNote, folderToDelete]);
-
-  const isAnyModalOpen = Boolean(
-    viewingItem ||
-      isTaskModalOpen ||
-      editingStickyNote ||
-      isFolderModalOpen ||
-      lightboxState ||
-      folderToDelete ||
-      deletingNote ||
-      deletingStickyNote
-  );
-
-  // Lock background scroll when any modal or reader window is open
-  useEffect(() => {
-    if (isAnyModalOpen) {
-      const origOverflow = document.body.style.overflow;
-      const origTouchAction = document.body.style.touchAction;
-      document.body.style.overflow = 'hidden';
-      document.body.style.touchAction = 'none';
-      return () => {
-        document.body.style.overflow = origOverflow;
-        document.body.style.touchAction = origTouchAction;
-      };
-    }
-  }, [isAnyModalOpen]);
+  // Note: body already has height: 100dvh; overflow: hidden in CSS, and modals use
+  // fixed inset-0 with overscroll-contain, so we avoid mutating body.style.touchAction
+  // or toggling overflow-hidden on <main> (which breaks scrolling after modal close).
 
   // Reload tasks when data is imported/restored
   useEffect(() => {
@@ -898,9 +989,44 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
       });
   }, [notes, selectedFolderId, searchQuery, folders, noteSortOrder]);
 
-  // Open Clean Viewer for a Sticky Note
-  const handleOpenStickyViewer = (entry: FileStickyNoteEntry) => {
+  // Handle Escape key to close any active modal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (lightboxState) {
+          setLightboxState(null);
+          return;
+        }
+        if (isTaskModalOpen) setIsTaskModalOpen(false);
+        if (viewingItem) handleCloseViewer();
+        if (isFolderModalOpen) setIsFolderModalOpen(false);
+        if (isSortMenuOpen) setIsSortMenuOpen(false);
+        if (isStickySortMenuOpen) setIsStickySortMenuOpen(false);
+        if (editingStickyNote) setEditingStickyNote(null);
+        if (folderToDelete) setFolderToDelete(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [lightboxState, isTaskModalOpen, viewingItem, handleCloseViewer, isFolderModalOpen, isSortMenuOpen, isStickySortMenuOpen, editingStickyNote, folderToDelete]);
+
+  // Open Clean Viewer for a Sticky Note (expands softly from the selected card)
+  const handleOpenStickyViewer = (entry: FileStickyNoteEntry, cardEl?: HTMLElement | null) => {
+    const cardKey = `sticky:${entry.fileId}:${entry.note.id}`;
+    const el = cardEl || cardRefs.current.get(cardKey) || null;
+    if (el) {
+      const r = el.getBoundingClientRect();
+      setOriginRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+      setViewerPhase('opening');
+    } else {
+      setOriginRect(null);
+      setViewerPhase('open');
+    }
+    setTargetRect(null);
+
+    const accentTheme = getCardTopAccentTheme(entry.note.color || '#fef08a');
     setViewingItem({
+      cardKey,
       type: 'sticky',
       id: entry.note.id,
       title: stickyContentToPlainPreview(entry.note.title || `یادداشت صفحه ${entry.note.pageNumber}`),
@@ -914,21 +1040,39 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
       isBold: entry.note.isBold,
       imageUrl: entry.note.imageUrl,
       images: entry.note.images && entry.note.images.length > 0 ? entry.note.images : (entry.note.imageUrl ? [entry.note.imageUrl] : []),
+      accentBarGradient: accentTheme.barGradient,
     });
   };
 
-  // Open Clean Viewer for a Standalone Note
-  const handleOpenNoteViewer = (note: NoteItem) => {
+  // Open Clean Viewer for a Standalone Note (expands softly from the selected card)
+  const handleOpenNoteViewer = (note: NoteItem, cardEl?: HTMLElement | null) => {
+    const cardKey = `note:${note.id}`;
+    const el = cardEl || cardRefs.current.get(cardKey) || null;
+    if (el) {
+      const r = el.getBoundingClientRect();
+      setOriginRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+      setViewerPhase('opening');
+    } else {
+      setOriginRect(null);
+      setViewerPhase('open');
+    }
+    setTargetRect(null);
+
     const folder = folders.find((f) => f.id === note.folderId);
+    const noteAccentColor = folder?.color || (note.isPinned ? '#d97706' : '#64748b');
+    const noteAccentTheme = getCardTopAccentTheme(noteAccentColor);
     setViewingItem({
+      cardKey,
       type: 'note',
       id: note.id,
       title: note.title || 'بدون عنوان',
       content: htmlToPreviewText(note.content || ''),
       rawHtml: note.content || '',
       sourceLabel: folder ? folder.name : 'عمومی',
+      color: noteAccentColor,
       date: note.updatedAt || note.createdAt,
       originalNote: note,
+      accentBarGradient: noteAccentTheme.barGradient,
     });
   };
 
@@ -976,7 +1120,7 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
     if (!deletingStickyNote || !onDeleteStickyNote) return;
     onDeleteStickyNote(deletingStickyNote.fileId, deletingStickyNote.note.id);
     if (viewingItem?.id === deletingStickyNote.note.id) {
-      setViewingItem(null);
+      closeViewerImmediate();
     }
     setDeletingStickyNote(null);
     showCopyToast('استیکی‌نوت حذف شد');
@@ -987,7 +1131,7 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
     if (!deletingNote) return;
     onDeleteNote(deletingNote.id);
     if (viewingItem?.id === deletingNote.id) {
-      setViewingItem(null);
+      closeViewerImmediate();
     }
     setDeletingNote(null);
     showCopyToast('یادداشت حذف شد');
@@ -1781,12 +1925,15 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
       </div>
       )}
 
-      {/* 3. Main List: کلیک روی هر کارت پنجره تمیز و خلوت را با فیزیک ژله‌ای باز می‌کند */}
+      {/* 3. Main List: اسکرول همیشه فعال و روان قبل و بعد از باز و بسته شدن کارت‌ها */}
       <main
-        className={`flex-1 ${
-          isAnyModalOpen ? 'overflow-hidden pointer-events-none select-none' : 'overflow-y-auto'
-        } px-2.5 sm:px-6 py-3 relative z-0 ${activeTab === 'tasks' ? 'bg-[#eceef2]' : ''}`}
-        style={{ paddingBottom: 'calc(max(env(safe-area-inset-bottom, 0px), 12px) + 72px)' }}
+        className={`flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y custom-column-scroll px-2.5 sm:px-6 py-3 relative z-0 ${
+          activeTab === 'tasks' ? 'bg-[#eceef2]' : ''
+        }`}
+        style={{
+          WebkitOverflowScrolling: 'touch',
+          paddingBottom: 'calc(max(env(safe-area-inset-bottom, 0px), 12px) + 72px)',
+        }}
       >
         <div className="w-full max-w-6xl mx-auto">
           {activeTab === 'tasks' ? (
@@ -1861,10 +2008,10 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
                           <div
                             key={task.id}
                             onClick={() => handleToggleTask(task.id)}
-                            className={`relative overflow-hidden group rounded-2xl transition-colors duration-200 p-2.5 sm:p-3 cursor-pointer select-none ${
+                            className={`relative overflow-hidden group rounded-2xl transition-[transform,colors,box-shadow] duration-200 ease-out active:scale-[0.985] p-2.5 sm:p-3 cursor-pointer select-none ${
                               isAnimating
                                 ? 'bg-neutral-900 text-white shadow-[0_14px_32px_-4px_rgba(0,0,0,0.34)] scale-[0.99]'
-                                : 'bg-white shadow-[0_6px_18px_-3px_rgba(0,0,0,0.10),0_2px_6px_-1px_rgba(0,0,0,0.05)]'
+                                : 'bg-white shadow-[0_6px_18px_-3px_rgba(0,0,0,0.10),0_2px_6px_-1px_rgba(0,0,0,0.05)] hover:shadow-[0_12px_26px_-5px_rgba(0,0,0,0.13)]'
                             }`}
                           >
                             {/* Sliding Black Overlay Animation */}
@@ -2160,13 +2307,19 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
                     const accentTheme = getCardTopAccentTheme(noteBg);
                     const hasImages = Boolean((entry.note.images && entry.note.images.length > 0) || entry.note.imageUrl);
 
+                    const cardKey = `sticky:${entry.fileId}:${entry.note.id}`;
+                    const isLifted = Boolean(viewingItem && viewingItem.cardKey === cardKey && targetRect && originRect);
+
                     return (
                       <article
                         key={`${entry.fileId}-${entry.note.id}`}
-                        onClick={() => handleOpenStickyViewer(entry)}
-                        className={`rounded-2xl bg-white shadow-[0_6px_18px_-3px_rgba(0,0,0,0.09),0_2px_6px_-1px_rgba(0,0,0,0.05)] flex flex-col ${
+                        ref={(el) => setCardRef(cardKey, el)}
+                        onClick={(e) => handleOpenStickyViewer(entry, e.currentTarget)}
+                        className={`rounded-2xl bg-white shadow-[0_6px_18px_-3px_rgba(0,0,0,0.09),0_2px_6px_-1px_rgba(0,0,0,0.05)] hover:shadow-[0_12px_26px_-5px_rgba(0,0,0,0.13),0_4px_10px_-2px_rgba(0,0,0,0.06)] transition-shadow duration-200 flex flex-col ${
                           hasImages ? 'h-[142px] sm:h-[150px]' : 'h-[112px] sm:h-[118px]'
-                        } cursor-pointer overflow-hidden relative select-none`}
+                        } cursor-pointer overflow-hidden relative select-none ${
+                          isLifted ? 'opacity-0 pointer-events-none' : ''
+                        }`}
                         title="برای باز کردن و مطالعه کامل کلیک کنید"
                       >
                         <div
@@ -2383,15 +2536,19 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
                     const noteAccentColor = noteFolder?.color || (note.isPinned ? '#d97706' : '#64748b');
                     const noteAccentTheme = getCardTopAccentTheme(noteAccentColor);
 
+                    const cardKey = `note:${note.id}`;
+                    const isLifted = Boolean(viewingItem && viewingItem.cardKey === cardKey && targetRect && originRect);
+
                     return (
                       <article
                         key={note.id}
-                        onClick={() => handleOpenNoteViewer(note)}
-                        className={`rounded-2xl bg-white flex flex-col h-[114px] sm:h-[120px] cursor-pointer overflow-hidden relative select-none ${
+                        ref={(el) => setCardRef(cardKey, el)}
+                        onClick={(e) => handleOpenNoteViewer(note, e.currentTarget)}
+                        className={`rounded-2xl bg-white transition-shadow duration-200 flex flex-col h-[114px] sm:h-[120px] cursor-pointer overflow-hidden relative select-none ${
                           note.isPinned
-                            ? 'shadow-[0_8px_22px_-3px_rgba(217,119,6,0.18),0_2px_8px_-1px_rgba(0,0,0,0.06)]'
-                            : 'shadow-[0_6px_18px_-3px_rgba(0,0,0,0.09),0_2px_6px_-1px_rgba(0,0,0,0.05)]'
-                        }`}
+                            ? 'shadow-[0_8px_22px_-3px_rgba(217,119,6,0.18),0_2px_8px_-1px_rgba(0,0,0,0.06)] hover:shadow-[0_14px_28px_-6px_rgba(217,119,6,0.22),0_4px_10px_-2px_rgba(0,0,0,0.07)]'
+                            : 'shadow-[0_6px_18px_-3px_rgba(0,0,0,0.09),0_2px_6px_-1px_rgba(0,0,0,0.05)] hover:shadow-[0_12px_26px_-5px_rgba(0,0,0,0.13),0_4px_10px_-2px_rgba(0,0,0,0.06)]'
+                        } ${isLifted ? 'opacity-0 pointer-events-none' : ''}`}
                         title="برای مشاهده متن کامل کلیک کنید"
                       >
                         <div
@@ -2524,300 +2681,619 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
           POPUP MODALS & DIALOGS
           ======================================================== */}
 
-      {/* Clean Reader Modal (پنجره خلوت، کاملاً شارپ و با وضوح بالا برای خواندن استیکی‌نوت یا یادداشت) */}
+      {/* Clean Reader Modal with Soft Spring Expand/Collapse from Card Origin */}
       {viewingItem && (
-        <div
-          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3 sm:p-5 animate-modal-backdrop touch-none overscroll-contain"
-          onClick={() => setViewingItem(null)}
-          onTouchMove={(e) => {
-            if (e.target === e.currentTarget) {
-              e.preventDefault();
-            }
-          }}
-        >
+        <MotionConfig reducedMotion="user">
+          {/* Hidden layout measurer (computes exact centered target rect before paint) */}
           <div
-            className="bg-white rounded-3xl max-w-lg w-full p-4 sm:p-5 shadow-[0_20px_48px_-12px_rgba(0,0,0,0.28)] space-y-3 animate-ios-modal flex flex-col max-h-[88vh] overscroll-contain touch-auto pointer-events-auto select-auto overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-            onTouchMove={(e) => e.stopPropagation()}
+            aria-hidden="true"
+            className="fixed inset-0 z-[-1] flex items-center justify-center p-3 sm:p-5 pointer-events-none invisible"
           >
-            {/* Modal Header */}
-            <div className="flex items-center justify-between px-3.5 sm:px-4 py-1.5 sm:py-2 -mx-4 -mt-4 sm:-mx-5 sm:-mt-5 bg-[#f5f6f8] shrink-0 gap-2">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span
-                  className="w-2.5 h-2.5 rounded-full shrink-0 shadow-2xs"
-                  style={{ backgroundColor: viewingItem.color || '#2563eb' }}
-                />
-                <div className="flex items-center gap-1.5 truncate">
-                  <span className="text-[10px] sm:text-[11px] font-medium text-neutral-500 truncate">
-                    {viewingItem.sourceLabel}
-                  </span>
-                  {viewingItem.pageNumber && (
-                    <span
-                      className="px-1.5 py-0.5 rounded-md text-[10px] font-black font-mono shrink-0 shadow-[0_2px_6px_rgba(0,0,0,0.10)] text-black"
-                      style={{
-                        backgroundColor: viewingItem.color || '#fef08a',
-                        color: '#000000',
-                      }}
-                    >
-                      صفحه {viewingItem.pageNumber}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              {/* Font Size Adjusters & Close */}
-              <div className="flex items-center gap-1.5 shrink-0">
-                <div className="flex items-center gap-0.5 bg-white p-0.5 rounded-lg shadow-[0_2px_8px_rgba(0,0,0,0.06)] text-[11px] font-bold text-neutral-600">
-                  <button
-                    type="button"
-                    onClick={() => setReaderFontSize('normal')}
-                    className={`px-1.5 py-0.5 rounded-md transition-colors cursor-pointer text-[11px] ${
-                      readerFontSize === 'normal'
-                        ? 'bg-[#f2f3f6] text-neutral-900 shadow-2xs font-extrabold'
-                        : 'hover:text-neutral-900'
-                    }`}
-                    title="اندازه فونت استاندارد"
-                  >
-                    A
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setReaderFontSize('large')}
-                    className={`px-1.5 py-0.5 rounded-md transition-colors cursor-pointer text-[11.5px] ${
-                      readerFontSize === 'large'
-                        ? 'bg-[#f2f3f6] text-neutral-900 shadow-2xs font-extrabold'
-                        : 'hover:text-neutral-900'
-                    }`}
-                    title="اندازه فونت بزرگ (پیشنهادی)"
-                  >
-                    A+
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setReaderFontSize('huge')}
-                    className={`px-1.5 py-0.5 rounded-md transition-colors cursor-pointer text-xs ${
-                      readerFontSize === 'huge'
-                        ? 'bg-[#f2f3f6] text-neutral-900 shadow-2xs font-extrabold'
-                        : 'hover:text-neutral-900'
-                    }`}
-                    title="اندازه فونت بسیار بزرگ"
-                  >
-                    A++
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setViewingItem(null)}
-                  className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-rose-500 hover:bg-rose-600 active:scale-90 text-white flex items-center justify-center cursor-pointer shadow-md shadow-rose-500/25 transition-transform shrink-0 ios-spring-btn"
-                  title="خروج و بستن پنجره (Esc)"
-                  aria-label="خروج و بستن پنجره"
-                >
-                  <X className="w-4 h-4 stroke-[2.5]" />
-                </button>
-              </div>
-            </div>
-
-            {/* Modal Title & Content with Isolated Scroll */}
             <div
-              className="overflow-y-auto flex-1 space-y-3 pl-1 pr-0.5 overscroll-contain custom-column-scroll"
-              dir="rtl"
-              style={{
-                overscrollBehavior: 'contain',
-                WebkitOverflowScrolling: 'touch',
-              }}
+              ref={modalMeasureRef}
+              className="bg-white rounded-3xl max-w-lg w-full flex flex-col max-h-[88vh] overflow-hidden"
             >
-              <h2 className="text-base sm:text-lg font-black text-neutral-950 leading-snug tracking-tight text-right w-full">
-                {viewingItem.title}
-              </h2>
-
-              {viewingItem.type === 'sticky' ? (
-                /* Styled Sticky Note Card Box with authentic paper look & full AI formatting (tables, headings, bold, lists) */
+              {viewingItem.accentBarGradient && (
                 <div
-                  className="px-4 py-3.5 sm:px-5 sm:py-4 rounded-2xl select-text shadow-[0_6px_18px_-4px_rgba(0,0,0,0.10)] flex flex-col items-stretch text-right w-full mx-auto"
-                  style={{
-                    backgroundColor: viewingItem.color || '#fef08a',
-                    color: '#000000',
-                  }}
-                  dir="rtl"
-                >
-                  <RichStickyContent
-                    content={viewingItem.content}
-                    fontSize={readerFontSize}
-                    isBold={viewingItem.isBold}
-                  />
-
-                  {((viewingItem.images && viewingItem.images.length > 0) || viewingItem.imageUrl) && (
-                    <div className="mt-4 p-3 rounded-xl bg-black/[0.04] w-full">
-                      <div className="text-xs font-bold mb-2 opacity-80 flex items-center justify-between">
-                        <span className="flex items-center gap-1.5">
-                          <ImageIcon className="w-3.5 h-3.5" />
-                          <span>تصاویر ضمیمه ({viewingItem.images?.length || 1}):</span>
-                          <span className="text-[10px] font-normal opacity-70">
-                            (برای نمایش تمام‌صفحه با قابلیت زوم کلیک کنید)
-                          </span>
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2.5 overflow-x-auto pb-1.5 custom-column-scroll">
-                        {(viewingItem.images && viewingItem.images.length > 0
-                          ? viewingItem.images
-                          : [viewingItem.imageUrl!]
-                        ).map((img, idx) => (
-                          <div
-                            key={idx}
-                            onClick={() => {
-                              const allImgs =
-                                viewingItem.images && viewingItem.images.length > 0
-                                  ? viewingItem.images
-                                  : [viewingItem.imageUrl!];
-                              setLightboxState({
-                                images: allImgs,
-                                index: idx,
-                                title: viewingItem.title,
-                              });
-                            }}
-                            className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden bg-white/80 group shadow-[0_4px_12px_rgba(0,0,0,0.14)] shrink-0 cursor-pointer hover:scale-105 transition-all select-none"
-                            title="کلیک برای نمایش تمام‌صفحه و زوم"
-                          >
-                            <img
-                              src={img}
-                              alt={`تصویر ${idx + 1}`}
-                              className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105 pointer-events-none"
-                              loading="lazy"
-                            />
-                            <div className="absolute top-1 right-1 px-1.5 py-0.2 rounded-md bg-black/70 text-white text-[9px] font-mono font-bold backdrop-blur-xs">
-                              {idx + 1}
-                            </div>
-                            <div className="absolute inset-0 bg-black/35 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
-                              <ZoomIn className="w-4 h-4 drop-shadow-xs" />
-                            </div>
+                  className={`${
+                    viewingItem.type === 'sticky' ? 'h-[8px] sm:h-[9px]' : 'h-[7px] sm:h-[8px]'
+                  } w-full shrink-0`}
+                />
+              )}
+              <div ref={modalMeasureContentRef} className="flex flex-col flex-1 min-h-0">
+                <div className="px-3.5 sm:px-4 py-1.5 sm:py-2 shrink-0 flex items-center justify-between gap-2">
+                  <span className="text-[11px]">spacer</span>
+                  <div className="w-7 h-7 sm:w-8 sm:h-8 shrink-0" />
+                </div>
+                <div className="flex-1 min-h-0 px-4 sm:px-5 py-3 space-y-3 overflow-hidden">
+                  <h2 className="text-base sm:text-lg font-black leading-snug tracking-tight">
+                    {viewingItem.title}
+                  </h2>
+                  {viewingItem.type === 'sticky' ? (
+                    <div className="px-4 py-3.5 sm:px-5 sm:py-4 rounded-2xl">
+                      <RichStickyContent
+                        content={viewingItem.content}
+                        fontSize={readerFontSize}
+                        isBold={viewingItem.isBold}
+                      />
+                      {((viewingItem.images && viewingItem.images.length > 0) || viewingItem.imageUrl) && (
+                        <div className="mt-4 p-3 rounded-xl">
+                          <div className="text-xs mb-2">images</div>
+                          <div className="pb-1.5">
+                            <div className="w-16 h-16 sm:w-20 sm:h-20" />
                           </div>
-                        ))}
-                      </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : viewingItem.rawHtml && /<[a-z][\s\S]*>/i.test(viewingItem.rawHtml) ? (
+                    <div
+                      dangerouslySetInnerHTML={{ __html: viewingItem.rawHtml }}
+                      className={`leading-relaxed prose max-w-none prose-p:my-2.5 prose-p:leading-[2.0] prose-headings:my-3 prose-ul:my-2 prose-li:my-1 ${
+                        readerFontSize === 'normal'
+                          ? 'text-[14px] sm:text-[15px] prose-p:text-[14px] sm:prose-p:text-[15px]'
+                          : readerFontSize === 'large'
+                          ? 'text-[16px] sm:text-[17px] prose-p:text-[16px] sm:prose-p:text-[17px]'
+                          : 'text-[18px] sm:text-[20px] prose-p:text-[18px] sm:prose-p:text-[20px]'
+                      }`}
+                    />
+                  ) : (
+                    <div
+                      className={`leading-relaxed whitespace-pre-wrap ${
+                        readerFontSize === 'normal'
+                          ? 'text-[14px] sm:text-[15px] leading-[2.0]'
+                          : readerFontSize === 'large'
+                          ? 'text-[16px] sm:text-[17px] leading-[2.2]'
+                          : 'text-[18px] sm:text-[20px] leading-[2.4]'
+                      }`}
+                    >
+                      {viewingItem.content || 'بدون متن'}
                     </div>
                   )}
                 </div>
-              ) : (
-                /* Regular Note Clean Reader with rich formatting or preserved paragraphs */
-                viewingItem.rawHtml && /<[a-z][\s\S]*>/i.test(viewingItem.rawHtml) ? (
-                  <div
-                    dangerouslySetInnerHTML={{ __html: viewingItem.rawHtml }}
-                    dir="rtl"
-                    className={`text-neutral-950 leading-relaxed font-sans select-text prose max-w-none text-right prose-p:my-2.5 prose-p:leading-[2.0] prose-headings:my-3 prose-headings:text-right prose-ul:my-2 prose-li:my-1 prose-img:rounded-xl prose-img:shadow-sm ${
-                      readerFontSize === 'normal'
-                        ? 'text-[14px] sm:text-[15px] prose-p:text-[14px] sm:prose-p:text-[15px]'
-                        : readerFontSize === 'large'
-                        ? 'text-[16px] sm:text-[17px] prose-p:text-[16px] sm:prose-p:text-[17px]'
-                        : 'text-[18px] sm:text-[20px] prose-p:text-[18px] sm:prose-p:text-[20px]'
-                    }`}
-                  />
-                ) : (
-                  <div
-                    dir="rtl"
-                    className={`text-neutral-950 leading-relaxed whitespace-pre-wrap font-sans select-text text-right w-full ${
-                      readerFontSize === 'normal'
-                        ? 'text-[14px] sm:text-[15px] leading-[2.0]'
-                        : readerFontSize === 'large'
-                        ? 'text-[16px] sm:text-[17px] leading-[2.2]'
-                        : 'text-[18px] sm:text-[20px] leading-[2.4]'
-                    }`}
-                  >
-                    {viewingItem.content || (
-                      <span className="text-neutral-400 italic">بدون متن</span>
-                    )}
-                  </div>
-                )
-              )}
-            </div>
-
-            {/* Modal Footer Actions */}
-            <div className="px-3.5 sm:px-4 py-1.5 sm:py-2 -mx-4 -mb-4 sm:-mx-5 sm:-mb-5 bg-[#f5f6f8] flex items-center justify-between shrink-0 gap-2">
-              <span className="text-[10.5px] text-neutral-400 font-mono truncate">
-                {viewingItem.date || ''}
-              </span>
-
-              <div className="flex items-center gap-1.5 shrink-0">
-                {/* Direct Jump to PDF page button if reading a sticky note */}
-                {viewingItem.type === 'sticky' && viewingItem.originalEntry && onOpenFileAtPage && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const entry = viewingItem.originalEntry!;
-                      setViewingItem(null);
-                      onOpenFileAtPage(entry.file, entry.note.pageNumber);
-                    }}
-                    className="px-2.5 py-1 text-[11px] font-bold text-neutral-800 bg-white hover:bg-neutral-50 rounded-lg cursor-pointer flex items-center gap-1 shadow-[0_2px_6px_rgba(0,0,0,0.08)]"
-                    title="رفتن به این صفحه در کتاب"
-                  >
-                    <BookOpen className="w-3 h-3 text-neutral-600" />
-                    <span>مشاهده در کتاب</span>
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => handleCopyText(htmlToPreviewText(viewingItem.rawHtml || viewingItem.content), 'متن')}
-                  className="px-2.5 py-1 text-[11px] font-semibold text-neutral-700 bg-white/90 hover:bg-white rounded-lg cursor-pointer flex items-center gap-1 shadow-[0_2px_6px_rgba(0,0,0,0.05)]"
-                >
-                  <Copy className="w-3 h-3" />
-                  <span>کپی</span>
-                </button>
-
-                {viewingItem.type === 'sticky' && viewingItem.originalEntry && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const entry = viewingItem.originalEntry!;
-                      setViewingItem(null);
-                      setEditingStickyNote(entry);
-                      setEditTitle(entry.note.title || '');
-                      setEditContent(entry.note.content || '');
-                      setEditColor(entry.note.color || '#fef08a');
-                      setEditTextColor(entry.note.textColor || '#713f12');
-                    }}
-                    className="px-2.5 py-1 text-[11px] font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg cursor-pointer flex items-center gap-1"
-                  >
-                    <Edit2 className="w-3 h-3" />
-                    <span>ویرایش</span>
-                  </button>
-                )}
-
-                {viewingItem.type === 'note' && viewingItem.originalNote && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const noteId = viewingItem.originalNote!.id;
-                      setViewingItem(null);
-                      onSelectNoteToEdit(noteId);
-                    }}
-                    className="px-2.5 py-1 text-[11px] font-semibold text-neutral-900 bg-white/90 hover:bg-white rounded-lg cursor-pointer flex items-center gap-1 shadow-[0_2px_6px_rgba(0,0,0,0.05)]"
-                  >
-                    <Edit2 className="w-3 h-3" />
-                    <span>ویرایش</span>
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => setViewingItem(null)}
-                  className="px-3 py-1 text-[11px] font-bold text-white bg-neutral-900 hover:bg-neutral-800 rounded-lg cursor-pointer shadow-xs"
-                >
-                  بستن
-                </button>
+                <div className="px-3.5 sm:px-4 py-1.5 sm:py-2 shrink-0 flex items-center justify-between gap-2">
+                  <span className="text-[10.5px]">footer</span>
+                  <div className="py-1 text-[11px]">btn</div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+
+          {/* Dimmed Backdrop */}
+          <motion.div
+            key={`backdrop-${viewingItem.cardKey}`}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: viewerPhase === 'closing' ? 0 : 1 }}
+            transition={{ duration: viewerPhase === 'closing' ? 0.22 : 0.24, ease: [0.22, 1, 0.36, 1] }}
+            className={`fixed inset-0 z-50 bg-black/45 overscroll-contain ${
+              viewerPhase === 'closing' ? 'pointer-events-none' : ''
+            }`}
+            onClick={handleCloseViewer}
+          />
+
+          {/* Morphing Card-to-Reader Window */}
+          {targetRect && (
+            <motion.div
+              key={`morph-${viewingItem.cardKey}`}
+              initial={
+                originRect
+                  ? {
+                      left: originRect.left,
+                      top: originRect.top,
+                      width: originRect.width,
+                      height: originRect.height,
+                      borderRadius: 16,
+                    }
+                  : {
+                      left: targetRect.left,
+                      top: targetRect.top,
+                      width: targetRect.width,
+                      height: targetRect.height,
+                      borderRadius: 24,
+                      opacity: 0,
+                      scale: 0.94,
+                    }
+              }
+              animate={
+                viewerPhase === 'closing' && originRect
+                  ? {
+                      left: originRect.left,
+                      top: originRect.top,
+                      width: originRect.width,
+                      height: originRect.height,
+                      borderRadius: 16,
+                    }
+                  : {
+                      left: targetRect.left,
+                      top: targetRect.top,
+                      width: targetRect.width,
+                      height: targetRect.height,
+                      borderRadius: 24,
+                      opacity: 1,
+                      scale: 1,
+                    }
+              }
+              transition={viewerPhase === 'closing' ? COLLAPSE_SPRING : EXPAND_SPRING}
+              onAnimationComplete={() => {
+                if (viewerPhaseRef.current === 'opening') {
+                  setViewerPhase('open');
+                } else if (viewerPhaseRef.current === 'closing') {
+                  closeViewerImmediate();
+                }
+              }}
+              style={{
+                position: 'fixed',
+                willChange:
+                  viewerPhase === 'opening' || viewerPhase === 'closing'
+                    ? 'left, top, width, height, border-radius'
+                    : 'auto',
+              }}
+              className={`z-50 bg-white flex flex-col overflow-hidden overscroll-contain touch-auto select-auto ${
+                viewerPhase === 'closing'
+                  ? 'pointer-events-none shadow-[0_6px_18px_-3px_rgba(0,0,0,0.09),0_2px_6px_-1px_rgba(0,0,0,0.05)]'
+                  : 'pointer-events-auto shadow-[0_24px_56px_-12px_rgba(0,0,0,0.30)]'
+              }`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Continuous Top Accent Ribbon preserved identically from card to reader and back */}
+              {viewingItem.accentBarGradient && (
+                <div
+                  className={`${
+                    viewingItem.type === 'sticky' ? 'h-[8px] sm:h-[9px]' : 'h-[7px] sm:h-[8px]'
+                  } w-full shrink-0 relative`}
+                  style={{ background: viewingItem.accentBarGradient }}
+                >
+                  <div className="absolute inset-x-0 top-0 h-[1.5px] bg-white/40 pointer-events-none" />
+                </div>
+              )}
+
+              {/* Content Stage housing both the Card Identity Face and the Expanded Reader Face */}
+              <div className="relative flex-1 min-h-0 w-full overflow-hidden">
+                {/* Face 1: Card Identity Mirror (visible at origin & smoothly re-emerges during collapse) */}
+                {originRect && (
+                  <motion.div
+                    initial={{ opacity: 1 }}
+                    animate={{ opacity: viewerPhase === 'closing' ? 1 : 0 }}
+                    transition={
+                      viewerPhase === 'closing'
+                        ? { duration: 0.18, delay: 0.04, ease: 'easeOut' }
+                        : { duration: 0.14, ease: 'easeOut' }
+                    }
+                    className="absolute inset-0 flex flex-col overflow-hidden pointer-events-none select-none bg-white"
+                  >
+                    {viewingItem.type === 'sticky' && viewingItem.originalEntry ? (
+                      (() => {
+                        const entry = viewingItem.originalEntry;
+                        const accentTheme = getCardTopAccentTheme(entry.note.color || '#fef08a');
+                        const rawPreview = stickyContentToPlainPreview(entry.note.content || '');
+                        const imgs = viewingItem.images || [];
+                        const cardHasImgs = imgs.length > 0;
+                        return (
+                          <>
+                            <div className="px-2.5 pt-1 pb-1 flex-1 min-h-0 flex flex-col overflow-hidden">
+                              <div className="flex items-center justify-between gap-1.5 mb-0.5 shrink-0">
+                                <div className="flex items-center gap-1 min-w-0">
+                                  <BookOpen className="w-2 h-2 text-neutral-400 shrink-0" />
+                                  <span className="text-[8px] font-normal text-neutral-400 truncate max-w-[130px]">
+                                    {entry.fileName}
+                                  </span>
+                                </div>
+                                <span
+                                  className="px-1.5 py-0.2 rounded-md text-[8.5px] font-bold font-mono shrink-0"
+                                  style={{
+                                    backgroundColor: accentTheme.badgeBg,
+                                    color: accentTheme.badgeText,
+                                    boxShadow: `0 2px 6px -1px ${accentTheme.glow}`,
+                                  }}
+                                >
+                                  ص {entry.note.pageNumber}
+                                </span>
+                              </div>
+                              <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-start px-0.5 w-full text-right" dir="rtl">
+                                <h3 className="text-[13px] sm:text-[13.5px] leading-[18px] font-bold text-neutral-950 truncate mb-0.5 tracking-tight shrink-0 text-right w-full">
+                                  {viewingItem.title}
+                                </h3>
+                                {cardHasImgs && (
+                                  <div className="mb-0.5 shrink-0 w-full flex justify-start" dir="rtl">
+                                    {imgs.length <= 1 ? (
+                                      <div className="rounded-md overflow-hidden h-8 w-14 bg-[#f5f6f8] shadow-[0_2px_6px_rgba(0,0,0,0.10)]">
+                                        <img src={imgs[0]} alt="" className="w-full h-full object-cover" />
+                                      </div>
+                                    ) : (
+                                      <div className="grid grid-cols-2 gap-1 w-full max-w-[116px]">
+                                        {imgs.slice(0, 2).map((img, idx) => (
+                                          <div key={idx} className="relative rounded-md overflow-hidden h-8 bg-[#f5f6f8] shadow-[0_2px_6px_rgba(0,0,0,0.10)]">
+                                            <img src={img} alt="" className="w-full h-full object-cover" />
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                <div className="text-[9.5px] text-neutral-700 font-normal leading-[13px] overflow-hidden text-right w-full line-clamp-2">
+                                  {rawPreview || <span className="text-neutral-400 italic text-[9px]">بدون متن...</span>}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="px-2.5 py-1 bg-[#f5f6f8] flex items-center justify-between gap-1.5 shrink-0 mt-auto">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="text-[9px] text-neutral-400 font-mono truncate">
+                                  {entry.note.createdAt || 'ثبت شده'}
+                                </span>
+                                {onOpenFileAtPage && (
+                                  <span className="px-1.5 py-0.5 text-[8.5px] font-semibold text-neutral-600 bg-white rounded-md flex items-center gap-1 shadow-[0_2px_6px_rgba(0,0,0,0.08)]">
+                                    <ExternalLink className="w-2.5 h-2.5 text-neutral-500" />
+                                    <span className="hidden sm:inline">مشاهده در فایل</span>
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-0.5 shrink-0 text-neutral-500">
+                                <span className="p-0.5"><Copy className="w-3 h-3" /></span>
+                                <span className="p-0.5"><Edit2 className="w-3 h-3" /></span>
+                                <span className="p-0.5"><Trash2 className="w-3 h-3" /></span>
+                              </div>
+                            </div>
+                          </>
+                        );
+                      })()
+                    ) : (
+                      (() => {
+                        const origNote = viewingItem.originalNote;
+                        const noteFolder = origNote ? folders.find((f) => f.id === origNote.folderId) : null;
+                        return (
+                          <>
+                            <div className="px-2.5 pt-1 pb-1 flex-1 min-h-0 flex flex-col overflow-hidden">
+                              <div className="flex items-center justify-between gap-1.5 mb-0.5 shrink-0">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <div className="w-4 h-4 rounded-md bg-[#f2f3f6] text-neutral-700 flex items-center justify-center shrink-0">
+                                    <FileText className="w-2.5 h-2.5" />
+                                  </div>
+                                  {noteFolder ? (
+                                    <div className="flex items-center gap-1 min-w-0 text-[9px] text-neutral-700 font-semibold">
+                                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: noteFolder.color || '#2563eb' }} />
+                                      <span className="truncate max-w-[110px]">{noteFolder.name}</span>
+                                    </div>
+                                  ) : (
+                                    <span className="text-[9px] text-neutral-500 font-medium">{viewingItem.sourceLabel}</span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <span className="text-[9px] text-neutral-400 font-mono tabular-nums">
+                                    {origNote?.createdAt || viewingItem.date}
+                                  </span>
+                                  {origNote?.isPinned && (
+                                    <span className="p-0.5 text-amber-500">
+                                      <Pin className="w-2.5 h-2.5 fill-amber-500" />
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <h3 className="text-[13px] sm:text-[13.5px] leading-[18px] font-bold text-neutral-950 truncate mb-0.5 shrink-0 text-right" dir="rtl">
+                                {viewingItem.title}
+                              </h3>
+                              <p className="text-[9.5px] text-neutral-500 line-clamp-2 leading-[13px] overflow-hidden whitespace-pre-line text-right" dir="rtl">
+                                {viewingItem.content || 'بدون متن'}
+                              </p>
+                            </div>
+                            <div className="mt-auto px-2.5 py-1 bg-[#f5f6f8] flex items-center justify-between shrink-0">
+                              <span className="text-[9px] text-neutral-400 font-mono">
+                                {origNote?.updatedAt ? `ویرایش ${origNote.updatedAt}` : origNote?.createdAt || viewingItem.date}
+                              </span>
+                              <div className="flex items-center gap-0.5 text-neutral-400">
+                                <span className="p-0.5"><Pin className="w-3 h-3" /></span>
+                                <span className="p-0.5"><Copy className="w-3 h-3" /></span>
+                                <span className="p-0.5"><Edit2 className="w-3 h-3" /></span>
+                                <span className="p-0.5"><Trash2 className="w-3 h-3" /></span>
+                              </div>
+                            </div>
+                          </>
+                        );
+                      })()
+                    )}
+                  </motion.div>
+                )}
+
+                {/* Face 2: Expanded Clean Reader Content (locked to target width to avoid text reflow during spring) */}
+                <motion.div
+                  initial={{ opacity: originRect ? 0 : 1 }}
+                  animate={{ opacity: viewerPhase === 'closing' ? 0 : 1 }}
+                  transition={
+                    viewerPhase === 'closing'
+                      ? { duration: 0.13, ease: 'easeOut' }
+                      : { duration: 0.2, delay: originRect ? 0.06 : 0, ease: 'easeOut' }
+                  }
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: '50%',
+                    x: '-50%',
+                    width: targetRect.width,
+                    height: targetContentHeight,
+                  }}
+                  className={`flex flex-col min-h-0 ${
+                    viewerPhase === 'closing' ? 'pointer-events-none' : ''
+                  }`}
+                >
+                  {/* Modal Header */}
+                  <div className="flex items-center justify-between px-3.5 sm:px-4 py-1.5 sm:py-2 bg-[#f5f6f8] shrink-0 gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full shrink-0 shadow-2xs"
+                        style={{ backgroundColor: viewingItem.color || '#2563eb' }}
+                      />
+                      <div className="flex items-center gap-1.5 truncate">
+                        <span className="text-[10px] sm:text-[11px] font-medium text-neutral-500 truncate">
+                          {viewingItem.sourceLabel}
+                        </span>
+                        {viewingItem.pageNumber && (
+                          <span
+                            className="px-1.5 py-0.5 rounded-md text-[10px] font-black font-mono shrink-0 shadow-[0_2px_6px_rgba(0,0,0,0.10)] text-black"
+                            style={{
+                              backgroundColor: viewingItem.color || '#fef08a',
+                              color: '#000000',
+                            }}
+                          >
+                            صفحه {viewingItem.pageNumber}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Font Size Adjusters & Close */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <div className="flex items-center gap-0.5 bg-white p-0.5 rounded-lg shadow-[0_2px_8px_rgba(0,0,0,0.06)] text-[11px] font-bold text-neutral-600">
+                        <button
+                          type="button"
+                          onClick={() => setReaderFontSize('normal')}
+                          className={`px-1.5 py-0.5 rounded-md transition-colors cursor-pointer text-[11px] ${
+                            readerFontSize === 'normal'
+                              ? 'bg-[#f2f3f6] text-neutral-900 shadow-2xs font-extrabold'
+                              : 'hover:text-neutral-900'
+                          }`}
+                          title="اندازه فونت استاندارد"
+                        >
+                          A
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReaderFontSize('large')}
+                          className={`px-1.5 py-0.5 rounded-md transition-colors cursor-pointer text-[11.5px] ${
+                            readerFontSize === 'large'
+                              ? 'bg-[#f2f3f6] text-neutral-900 shadow-2xs font-extrabold'
+                              : 'hover:text-neutral-900'
+                          }`}
+                          title="اندازه فونت بزرگ (پیشنهادی)"
+                        >
+                          A+
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReaderFontSize('huge')}
+                          className={`px-1.5 py-0.5 rounded-md transition-colors cursor-pointer text-xs ${
+                            readerFontSize === 'huge'
+                              ? 'bg-[#f2f3f6] text-neutral-900 shadow-2xs font-extrabold'
+                              : 'hover:text-neutral-900'
+                          }`}
+                          title="اندازه فونت بسیار بزرگ"
+                        >
+                          A++
+                        </button>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleCloseViewer}
+                        className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-rose-500 hover:bg-rose-600 active:scale-90 text-white flex items-center justify-center cursor-pointer shadow-md shadow-rose-500/25 transition-transform shrink-0"
+                        title="خروج و بستن پنجره (Esc)"
+                        aria-label="خروج و بستن پنجره"
+                      >
+                        <X className="w-4 h-4 stroke-[2.5]" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Modal Title & Content with Isolated Scroll */}
+                  <div
+                    className="overflow-y-auto flex-1 space-y-3 px-4 sm:px-5 py-3 overscroll-contain custom-column-scroll"
+                    dir="rtl"
+                    style={{
+                      overscrollBehavior: 'contain',
+                      WebkitOverflowScrolling: 'touch',
+                    }}
+                  >
+                    <h2 className="text-base sm:text-lg font-black text-neutral-950 leading-snug tracking-tight text-right w-full">
+                      {viewingItem.title}
+                    </h2>
+
+                    {viewingItem.type === 'sticky' ? (
+                      /* Styled Sticky Note Card Box with authentic paper look & full AI formatting (tables, headings, bold, lists) */
+                      <div
+                        className="px-4 py-3.5 sm:px-5 sm:py-4 rounded-2xl select-text shadow-[0_6px_18px_-4px_rgba(0,0,0,0.10)] flex flex-col items-stretch text-right w-full mx-auto"
+                        style={{
+                          backgroundColor: viewingItem.color || '#fef08a',
+                          color: '#000000',
+                        }}
+                        dir="rtl"
+                      >
+                        <RichStickyContent
+                          content={viewingItem.content}
+                          fontSize={readerFontSize}
+                          isBold={viewingItem.isBold}
+                        />
+
+                        {((viewingItem.images && viewingItem.images.length > 0) || viewingItem.imageUrl) && (
+                          <div className="mt-4 p-3 rounded-xl bg-black/[0.04] w-full">
+                            <div className="text-xs font-bold mb-2 opacity-80 flex items-center justify-between">
+                              <span className="flex items-center gap-1.5">
+                                <ImageIcon className="w-3.5 h-3.5" />
+                                <span>تصاویر ضمیمه ({viewingItem.images?.length || 1}):</span>
+                                <span className="text-[10px] font-normal opacity-70">
+                                  (برای نمایش تمام‌صفحه با قابلیت زوم کلیک کنید)
+                                </span>
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2.5 overflow-x-auto pb-1.5 custom-column-scroll">
+                              {(viewingItem.images && viewingItem.images.length > 0
+                                ? viewingItem.images
+                                : [viewingItem.imageUrl!]
+                              ).map((img, idx) => (
+                                <div
+                                  key={idx}
+                                  onClick={() => {
+                                    const allImgs =
+                                      viewingItem.images && viewingItem.images.length > 0
+                                        ? viewingItem.images
+                                        : [viewingItem.imageUrl!];
+                                    setLightboxState({
+                                      images: allImgs,
+                                      index: idx,
+                                      title: viewingItem.title,
+                                    });
+                                  }}
+                                  className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden bg-white/80 group shadow-[0_4px_12px_rgba(0,0,0,0.14)] shrink-0 cursor-pointer hover:scale-105 transition-all select-none"
+                                  title="کلیک برای نمایش تمام‌صفحه و زوم"
+                                >
+                                  <img
+                                    src={img}
+                                    alt={`تصویر ${idx + 1}`}
+                                    className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105 pointer-events-none"
+                                    loading="lazy"
+                                  />
+                                  <div className="absolute top-1 right-1 px-1.5 py-0.2 rounded-md bg-black/70 text-white text-[9px] font-mono font-bold backdrop-blur-xs">
+                                    {idx + 1}
+                                  </div>
+                                  <div className="absolute inset-0 bg-black/35 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                                    <ZoomIn className="w-4 h-4 drop-shadow-xs" />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      /* Regular Note Clean Reader with rich formatting or preserved paragraphs */
+                      viewingItem.rawHtml && /<[a-z][\s\S]*>/i.test(viewingItem.rawHtml) ? (
+                        <div
+                          dangerouslySetInnerHTML={{ __html: viewingItem.rawHtml }}
+                          dir="rtl"
+                          className={`text-neutral-950 leading-relaxed font-sans select-text prose max-w-none text-right prose-p:my-2.5 prose-p:leading-[2.0] prose-headings:my-3 prose-headings:text-right prose-ul:my-2 prose-li:my-1 prose-img:rounded-xl prose-img:shadow-sm ${
+                            readerFontSize === 'normal'
+                              ? 'text-[14px] sm:text-[15px] prose-p:text-[14px] sm:prose-p:text-[15px]'
+                              : readerFontSize === 'large'
+                              ? 'text-[16px] sm:text-[17px] prose-p:text-[16px] sm:prose-p:text-[17px]'
+                              : 'text-[18px] sm:text-[20px] prose-p:text-[18px] sm:prose-p:text-[20px]'
+                          }`}
+                        />
+                      ) : (
+                        <div
+                          dir="rtl"
+                          className={`text-neutral-950 leading-relaxed whitespace-pre-wrap font-sans select-text text-right w-full ${
+                            readerFontSize === 'normal'
+                              ? 'text-[14px] sm:text-[15px] leading-[2.0]'
+                              : readerFontSize === 'large'
+                              ? 'text-[16px] sm:text-[17px] leading-[2.2]'
+                              : 'text-[18px] sm:text-[20px] leading-[2.4]'
+                          }`}
+                        >
+                          {viewingItem.content || (
+                            <span className="text-neutral-400 italic">بدون متن</span>
+                          )}
+                        </div>
+                      )
+                    )}
+                  </div>
+
+                  {/* Modal Footer Actions */}
+                  <div className="px-3.5 sm:px-4 py-1.5 sm:py-2 bg-[#f5f6f8] flex items-center justify-between shrink-0 gap-2">
+                    <span className="text-[10.5px] text-neutral-400 font-mono truncate">
+                      {viewingItem.date || ''}
+                    </span>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {/* Direct Jump to PDF page button if reading a sticky note */}
+                      {viewingItem.type === 'sticky' && viewingItem.originalEntry && onOpenFileAtPage && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const entry = viewingItem.originalEntry!;
+                            closeViewerImmediate();
+                            onOpenFileAtPage(entry.file, entry.note.pageNumber);
+                          }}
+                          className="px-2.5 py-1 text-[11px] font-bold text-neutral-800 bg-white hover:bg-neutral-50 rounded-lg cursor-pointer flex items-center gap-1 shadow-[0_2px_6px_rgba(0,0,0,0.08)]"
+                          title="رفتن به این صفحه در کتاب"
+                        >
+                          <BookOpen className="w-3 h-3 text-neutral-600" />
+                          <span>مشاهده در کتاب</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => handleCopyText(htmlToPreviewText(viewingItem.rawHtml || viewingItem.content), 'متن')}
+                        className="px-2.5 py-1 text-[11px] font-semibold text-neutral-700 bg-white/90 hover:bg-white rounded-lg cursor-pointer flex items-center gap-1 shadow-[0_2px_6px_rgba(0,0,0,0.05)]"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>کپی</span>
+                      </button>
+
+                      {viewingItem.type === 'sticky' && viewingItem.originalEntry && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const entry = viewingItem.originalEntry!;
+                            closeViewerImmediate();
+                            setEditingStickyNote(entry);
+                            setEditTitle(entry.note.title || '');
+                            setEditContent(entry.note.content || '');
+                            setEditColor(entry.note.color || '#fef08a');
+                            setEditTextColor(entry.note.textColor || '#713f12');
+                          }}
+                          className="px-2.5 py-1 text-[11px] font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg cursor-pointer flex items-center gap-1"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                          <span>ویرایش</span>
+                        </button>
+                      )}
+
+                      {viewingItem.type === 'note' && viewingItem.originalNote && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const noteId = viewingItem.originalNote!.id;
+                            closeViewerImmediate();
+                            onSelectNoteToEdit(noteId);
+                          }}
+                          className="px-2.5 py-1 text-[11px] font-semibold text-neutral-900 bg-white/90 hover:bg-white rounded-lg cursor-pointer flex items-center gap-1 shadow-[0_2px_6px_rgba(0,0,0,0.05)]"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                          <span>ویرایش</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleCloseViewer}
+                        className="px-3 py-1 text-[11px] font-bold text-white bg-neutral-900 hover:bg-neutral-800 rounded-lg cursor-pointer shadow-xs"
+                      >
+                        بستن
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              </div>
+            </motion.div>
+          )}
+        </MotionConfig>
       )}
 
       {/* Folder Creation / Edit Modal (هماهنگ با سبک دیزاین سراسری) */}
       {isFolderModalOpen && (
         <div
-          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4 animate-modal-backdrop"
+          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4"
           onClick={() => setIsFolderModalOpen(false)}
         >
           <div
-            className="bg-white rounded-3xl max-w-sm w-full p-5 sm:p-6 shadow-[0_20px_48px_-12px_rgba(0,0,0,0.28)] space-y-4 animate-ios-modal"
+            className="bg-white rounded-3xl max-w-sm w-full p-5 sm:p-6 shadow-[0_24px_56px_-12px_rgba(0,0,0,0.30)] space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between pb-2">
@@ -2930,11 +3406,11 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
       {/* Delete Folder Confirmation Dialog */}
       {folderToDelete && (
         <div
-          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4 animate-modal-backdrop"
+          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4"
           onClick={() => setFolderToDelete(null)}
         >
           <div
-            className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-[0_20px_48px_-12px_rgba(0,0,0,0.28)] space-y-4 animate-ios-modal text-center"
+            className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-[0_24px_56px_-12px_rgba(0,0,0,0.30)] space-y-4 text-center"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto shadow-xs">
@@ -2969,11 +3445,11 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
       {/* Sticky Note Quick Edit Modal */}
       {editingStickyNote && (
         <div
-          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4 animate-modal-backdrop"
+          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4"
           onClick={() => setEditingStickyNote(null)}
         >
           <div
-            className="bg-white rounded-3xl max-w-md w-full p-6 shadow-[0_20px_48px_-12px_rgba(0,0,0,0.28)] space-y-4 animate-ios-modal"
+            className="bg-white rounded-3xl max-w-md w-full p-6 shadow-[0_24px_56px_-12px_rgba(0,0,0,0.30)] space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between pb-2">
@@ -3117,11 +3593,11 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
       {/* Delete Sticky Note Dialog */}
       {deletingStickyNote && (
         <div
-          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4 animate-modal-backdrop"
+          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4"
           onClick={() => setDeletingStickyNote(null)}
         >
           <div
-            className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-[0_20px_48px_-12px_rgba(0,0,0,0.28)] space-y-4 animate-ios-modal text-center"
+            className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-[0_24px_56px_-12px_rgba(0,0,0,0.30)] space-y-4 text-center"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto shadow-xs">
@@ -3156,11 +3632,11 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
       {/* Delete Standalone Note Dialog */}
       {deletingNote && (
         <div
-          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4 animate-modal-backdrop"
+          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4"
           onClick={() => setDeletingNote(null)}
         >
           <div
-            className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-[0_20px_48px_-12px_rgba(0,0,0,0.28)] space-y-4 animate-ios-modal text-center"
+            className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-[0_24px_56px_-12px_rgba(0,0,0,0.30)] space-y-4 text-center"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto shadow-xs">
@@ -3195,12 +3671,12 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
       {/* Task Add/Edit Modal */}
       {isTaskModalOpen && (
         <div
-          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4 animate-modal-backdrop"
+          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4"
           onClick={() => setIsTaskModalOpen(false)}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-[0_20px_48px_-12px_rgba(0,0,0,0.28)] space-y-4 animate-ios-modal"
+            className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-[0_24px_56px_-12px_rgba(0,0,0,0.30)] space-y-4"
           >
             <div className="flex items-center justify-between pb-2">
               <div className="flex items-center gap-2">
@@ -3376,10 +3852,10 @@ export const NotesOverview: React.FC<NotesOverviewProps> = ({
         </button>
       </nav>
 
-      {/* 4. Copied Toast Notification with Jelly Physics (Positioned above floating capsule) */}
+      {/* 4. Copied Toast Notification (Positioned above floating capsule) */}
       {copiedToast && (
         <div
-          className="absolute bottom-16 left-1/2 -translate-x-1/2 z-50 bg-neutral-900 text-white px-4 py-2 rounded-2xl shadow-2xl flex items-center gap-2 text-xs font-bold animate-ios-jelly whitespace-nowrap"
+          className="absolute bottom-16 left-1/2 -translate-x-1/2 z-50 bg-neutral-900 text-white px-4 py-2 rounded-2xl shadow-2xl flex items-center gap-2 text-xs font-bold whitespace-nowrap"
         >
           <Check className="w-4 h-4 text-emerald-400" />
           <span>{copiedToast}</span>

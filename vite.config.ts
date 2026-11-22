@@ -18,8 +18,8 @@ export default defineConfig(() => {
           name: 'میز مطالعه (Study Space)',
           short_name: 'میز مطالعه',
           description: 'محیط مطالعه، مدیریت پی‌دی‌اف، یادداشت‌برداری، پومودورو و تحلیل عملکرد',
-          theme_color: '#09090b',
-          background_color: '#09090b',
+          theme_color: '#eef0f3',
+          background_color: '#eef0f3',
           display: 'standalone',
           orientation: 'any',
           start_url: './',
@@ -53,6 +53,7 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          globIgnores: ['**/assets/aistudio/**'],
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           runtimeCaching: [
             {

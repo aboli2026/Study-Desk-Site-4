@@ -388,11 +388,15 @@ button, input, textarea, select, optgroup {
   will-change: opacity;
 }
 
-/* برای پنجره‌های مودال و بازشدن کارت‌ها (کاملاً روان، بدون پرش و روی GPU موبایل) */
+/* برای پنجره‌های مودال و بازشدن کارت‌ها (کاملاً روان، سبک اپل، بدون پرش و روی GPU موبایل) */
 @keyframes ios-modal-jelly-appear {
   0% {
     opacity: 0;
-    transform: translate3d(0, 14px, 0) scale3d(0.95, 0.95, 1);
+    transform: translate3d(0, 18px, 0) scale3d(0.92, 0.92, 1);
+  }
+  65% {
+    opacity: 1;
+    transform: translate3d(0, -2px, 0) scale3d(1.012, 1.012, 1);
   }
   100% {
     opacity: 1;
@@ -401,7 +405,7 @@ button, input, textarea, select, optgroup {
 }
 
 .animate-ios-modal {
-  animation: ios-modal-jelly-appear 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ios-modal-jelly-appear 0.34s cubic-bezier(0.32, 0.72, 0, 1) both;
   will-change: transform, opacity;
   backface-visibility: hidden;
   contain: layout style;
@@ -410,11 +414,15 @@ button, input, textarea, select, optgroup {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* برای اکستند شدن کارت‌های یادداشت با حرکت نرم روی GPU */
+/* برای اکستند شدن کارت‌های یادداشت با حرکت نرم و فنری سبک اپل روی GPU */
 @keyframes ios-card-jelly-expand {
   0% {
     opacity: 0;
-    transform: translate3d(0, 10px, 0) scale3d(0.96, 0.96, 1);
+    transform: translate3d(0, 14px, 0) scale3d(0.91, 0.91, 1);
+  }
+  60% {
+    opacity: 1;
+    transform: translate3d(0, -2px, 0) scale3d(1.015, 1.015, 1);
   }
   100% {
     opacity: 1;
@@ -423,7 +431,7 @@ button, input, textarea, select, optgroup {
 }
 
 .animate-ios-card-expand {
-  animation: ios-card-jelly-expand 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ios-card-jelly-expand 0.32s cubic-bezier(0.32, 0.72, 0, 1) both;
   will-change: transform, opacity;
   backface-visibility: hidden;
   contain: layout style;

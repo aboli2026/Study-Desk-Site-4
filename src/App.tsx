@@ -4,6 +4,7 @@ import { NoteItem, StudyFile, StickyNoteItem } from './types';
 import { NotesView } from './components/NotesView';
 import { SettingsView } from './components/SettingsView';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { PWAInstallButton } from './components/PWAInstallButton';
 import {
   getAllNotesFromStorage,
   saveAllNotesToStorage,
@@ -235,6 +236,9 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* In-App PWA Install Button / iOS Safari Guide */}
+          <PWAInstallButton />
+
           {/* Settings Icon Button */}
           <button
             type="button"
@@ -249,7 +253,7 @@ export default function App() {
       </header>
 
       {/* Main Full-Screen Notes Workspace */}
-      <main className="flex-1 h-full overflow-hidden relative flex flex-col bg-[#f5f6f8] rounded-2xl shadow-[0_10px_32px_-6px_rgba(0,0,0,0.10),0_3px_10px_-2px_rgba(0,0,0,0.04)]">
+      <main className="flex-1 min-h-0 h-full overflow-hidden relative flex flex-col bg-[#f5f6f8] rounded-2xl shadow-[0_10px_32px_-6px_rgba(0,0,0,0.10),0_3px_10px_-2px_rgba(0,0,0,0.04)]">
         <NotesView
           notes={notes}
           onAddNote={handleAddNote}
@@ -265,13 +269,13 @@ export default function App() {
       {/* Settings & Data Transfer Modal (Opens cleanly upon tapping Settings Icon) */}
       {isSettingsOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-2 sm:p-4 animate-modal-backdrop"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-2 sm:p-4"
           dir="rtl"
           onClick={(e) => {
             if (e.target === e.currentTarget) setIsSettingsOpen(false);
           }}
         >
-          <div className="w-full max-w-lg bg-[#f5f6f8] rounded-2xl sm:rounded-3xl shadow-[0_20px_48px_-12px_rgba(0,0,0,0.28)] overflow-hidden max-h-[90vh] flex flex-col animate-ios-modal">
+          <div className="w-full max-w-lg bg-[#f5f6f8] rounded-2xl sm:rounded-3xl shadow-[0_24px_56px_-12px_rgba(0,0,0,0.30)] overflow-hidden max-h-[90vh] flex flex-col">
             <SettingsView
               notesCount={notes.length}
               notes={notes}
